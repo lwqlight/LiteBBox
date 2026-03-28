@@ -6,7 +6,7 @@
 
 | 实现 | 文件 | 运行环境 | 画框方式 |
 |---|---|---|---|
-| 纯 HTML（推荐） | `Web 极简目标检测标注工具.html` | 浏览器直接打开，零依赖 | 鼠标拖拽 |
+| 纯 HTML（推荐） | `index.html` | 浏览器直接打开，零依赖 | 鼠标拖拽 |
 | Gradio（Python） | `gradio_labelimg.py` | Python + Gradio 服务端 | 两次点击定框 |
 
 ## 效果预览
@@ -33,9 +33,9 @@
 
 ```bash
 # 双击打开，或命令行启动：
-open "Web 极简目标检测标注工具.html"    # macOS
-xdg-open "Web 极简目标检测标注工具.html"  # Linux
-start "" "Web 极简目标检测标注工具.html"  # Windows
+open index.html          # macOS
+xdg-open index.html      # Linux
+start index.html         # Windows
 ```
 
 1. 点击 **打开图片文件夹** 加载图片
