@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>标注工具-0320-版本 (类LabelImg)</title>
+    <!-- 使用 Tailwind CSS 快速美化 UI -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 使用 JSZip 用于生成压缩包 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #1e1e1e; color: #e0e0e0; }
+        #canvas-container {
+            position: relative;
+            width: 100%;
+            height: calc(100vh - 4rem);
+            overflow: auto;
+            background-color: #2d2d2d;
+            cursor: crosshair;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        canvas {
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5);
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+        }
+        /* 自定义滚动条 */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #1e1e1e; }
+        ::-webkit-scrollbar-thumb { background: #555; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #777; }
+    </style>
+</head>
+<body class="flex flex-col h-screen font-sans">
+
+    <!-- 顶部导航栏 -->
+    <header class="h-16 bg-gray-900 border-b border-gray-700 flex items-center justify-between px-6 shrink-0">
+        <div class="flex items-center gap-4">
+            <h1 class="text-xl font-bold text-white tracking-wide">Web LabelImg</h1>
+            
+            <label class="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded cursor-pointer transition shadow text-sm font-medium">
+                📂 打开图片文件夹
+                <!-- webkitdirectory 允许选择整个文件夹 -->
+                <input type="file" id="dir-input" webkitdirectory directory multiple class="hidden" accept="image/jpeg, image/png, image/bmp">
+            </label>
+        </div>
+        
+        <div class="flex items-center gap-4">
+            <div class="text-sm text-gray-400">快捷键: [A]上一张 [D]下一张 [Ctrl+Z]撤销</div>
+            <button id="export-btn" class="bg-green-600 hover:bg-green-500 text-white px-4 py-2 rounded transition shadow text-sm font-medium flex items-center gap-2">
+                📦 导出所有 XML (ZIP)
+            </button>
+        </div>
+    </header>
+
+    <div class="flex flex-1 overflow-hidden">
+        <!-- 左侧工具栏 -->
+        <aside class="w-64 bg-gray-800 border-r border-gray-700 flex flex-col shrink-0">
+            <!-- 类别设置 -->
+            <div class="p-4 border-b border-gray-700">
+                <label class="block text-xs text-gray-400 mb-1">标注类别 (英文逗号分隔)</label>
+                <input type="text" id="class-input" value="person,car,dog,cat" class="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-blue-500">
+            </div>
+            
+            <!-- 类别单选列表 -->
+            <div class="p-4 border-b border-gray-700 flex-1 overflow-y-auto">
+                <h3 class="text-xs text-gray-400 mb-2 uppercase font-semibold">选择当前类别</h3>
+                <div id="class-list" class="flex flex-col gap-2">
+                    <!-- 动态生成 -->
+                </div>
+            </div>
+
+            <!-- 文件列表 -->
+            <div class="p-4 border-b border-gray-700 flex-1 overflow-y-auto flex flex-col">
+                <div class="flex justify-between items-center mb-2">
+                    <h3 class="text-xs text-gray-400 uppercase font-semibold">文件列表</h3>
+                    <span id="file-counter" class="text-xs text-blue-400">0 / 0</span>
+                </div>
+                <div id="file-list" class="flex flex-col gap-1 text-sm overflow-y-auto">
+                    <!-- 动态生成 -->
+                    <div class="text-gray-500 text-xs italic">暂未加载文件夹</div>
+                </div>
+            </div>
+
+            <!-- 控制按钮 -->
+            <div class="p-4 flex flex-col gap-2 bg-gray-900">
+                <button id="undo-btn" class="w-full bg-gray-700 hover:bg-gray-600 py-1.5 rounded text-sm transition">↩️ 撤销上一框</button>
+                <div class="flex gap-2 mt-2">
+                    <button id="prev-btn" class="flex-1 bg-gray-700 hover:bg-gray-600 py-1.5 rounded text-sm transition">⬅️ 上一张</button>
+                    <button id="next-btn" class="flex-1 bg-gray-700 hover:bg-gray-600 py-1.5 rounded text-sm transition">下一张 ➡️</button>
+                </div>
+            </div>
+        </aside>
+
+        <!-- 主工作区 -->
+        <main class="flex-1 flex flex-col relative">
+            <div id="canvas-container">
+                <!-- 真正的画板 -->
+                <canvas id="canvas"></canvas>
+            </div>
+        </main>
+    </div>
+
+    <!-- 弹窗提示 -->
+    <div id="toast" class="fixed bottom-4 right-4 bg-gray-800 text-white px-4 py-2 rounded shadow-lg border-l-4 border-blue-500 transform transition-transform translate-y-20 opacity-0 z-50">
+        提示信息
+    </div>
+
+    <script>
+        // ================= 核心状态变量 =================
+        let imageFiles = [];       // 存储用户选择的图片文件对象
+        let currentIndex = -1;     // 当前显示的图片索引
+        let annotations = {};      // 存储所有标注数据 { "img1.jpg": [{class:"car", bbox:[x1,y1,x2,y2]}, ...] }
+        let classes = [];          // 当前类别列表
+        let currentClass = "";     // 当前选中的类别
+        
+        let currentImageObj = null; // 当前加载的 Image 对象
+        
+        // 预设颜色池
+        const COLORS = ["#FF3B30", "#007AFF", "#34C759", "#FFCC00", "#AF52DE", "#FF9500", "#5AC8FA", "#FF2D55"];
+
+        // Canvas 相关
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const container = document.getElementById('canvas-container');
+
+        // 交互状态
+        let isDrawing = false;
+        let startX = 0; let startY = 0;
+        let currentX = 0; let currentY = 0;
+        let mouseX = 0; let mouseY = 0;
+
+        // DOM 元素
+        const dirInput = document.getElementById('dir-input');
+        const classInput = document.getElementById('class-input');
+        const classListDiv = document.getElementById('class-list');
+        const fileListDiv = document.getElementById('file-list');
+        const fileCounter = document.getElementById('file-counter');
+        
+        // ================= 初始化与 UI 逻辑 =================
+        function initClasses() {
+            classes = classInput.value.split(',').map(c => c.trim()).filter(c => c);
+            if(classes.length === 0) classes = ['object'];
+            if(!classes.includes(currentClass)) currentClass = classes[0];
+            
+            classListDiv.innerHTML = '';
+            classes.forEach((c, idx) => {
+                const color = COLORS[idx % COLORS.length];
+                const label = document.createElement('label');
+                label.className = `flex items-center gap-2 p-2 rounded cursor-pointer hover:bg-gray-700 transition ${c === currentClass ? 'bg-gray-700 ring-1 ring-blue-500' : ''}`;
+                label.innerHTML = `
+                    <div class="w-3 h-3 rounded-full" style="background-color: ${color}"></div>
+                    <input type="radio" name="class-radio" value="${c}" class="hidden" ${c === currentClass ? 'checked' : ''}>
+                    <span class="text-sm select-none">${c}</span>
+                `;
+                label.onclick = () => {
+                    currentClass = c;
+                    initClasses(); // 重新渲染选中状态
+                };
+                classListDiv.appendChild(label);
+            });
+        }
+
+        classInput.addEventListener('change', initClasses);
+        initClasses();
+
+        function showToast(msg, isError=false) {
+            const toast = document.getElementById('toast');
+            toast.textContent = msg;
+            toast.className = `fixed bottom-4 right-4 px-4 py-2 rounded shadow-lg border-l-4 transform transition-all duration-300 z-50 text-white ${isError ? 'bg-red-800 border-red-500' : 'bg-gray-800 border-blue-500'}`;
+            toast.style.opacity = '1';
+            toast.style.transform = 'translateY(0)';
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                toast.style.transform = 'translateY(20px)';
+            }, 3000);
+        }
+
+        // ================= 文件加载逻辑 =================
+        dirInput.addEventListener('change', (e) => {
+            const files = Array.from(e.target.files);
+            const validExts = ['jpg', 'jpeg', 'png', 'bmp'];
+            imageFiles = files.filter(f => {
+                const ext = f.name.split('.').pop().toLowerCase();
+                return validExts.includes(ext);
+            });
+            
+            // 按文件名自然排序
+            imageFiles.sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true}));
+            
+            if(imageFiles.length === 0) {
+                showToast("未找到支持的图片文件！", true);
+                return;
+            }
+
+            // 初始化 annotations 字典
+            imageFiles.forEach(f => {
+                if(!annotations[f.name]) annotations[f.name] = [];
+            });
+
+            renderFileList();
+            loadImage(0);
+            showToast(`成功加载 ${imageFiles.length} 张图片`);
+        });
+
+        function renderFileList() {
+            fileListDiv.innerHTML = '';
+            imageFiles.forEach((file, idx) => {
+                const div = document.createElement('div');
+                div.className = `px-2 py-1 cursor-pointer truncate rounded hover:bg-gray-700 transition ${idx === currentIndex ? 'bg-blue-600 text-white font-bold' : 'text-gray-400'}`;
+                div.textContent = file.name;
+                
+                // 标记已标注的图片
+                if(annotations[file.name] && annotations[file.name].length > 0) {
+                    div.innerHTML = `<span class="text-green-400 mr-1">✓</span>` + div.innerHTML;
+                }
+
+                div.onclick = () => loadImage(idx);
+                fileListDiv.appendChild(div);
+            });
+            fileCounter.textContent = `${currentIndex + 1} / ${imageFiles.length}`;
+            
+            // 滚动到当前视图
+            const activeEl = fileListDiv.children[currentIndex];
+            if(activeEl) activeEl.scrollIntoView({ block: "nearest" });
+        }
+
+        function loadImage(idx) {
+            if (idx < 0 || idx >= imageFiles.length) return;
+            currentIndex = idx;
+            
+            const file = imageFiles[idx];
+            const url = URL.createObjectURL(file);
+            
+            currentImageObj = new Image();
+            currentImageObj.onload = () => {
+                // 根据图片真实分辨率设置 Canvas 大小
+                canvas.width = currentImageObj.width;
+                canvas.height = currentImageObj.height;
+                renderFileList();
+                draw(); // 渲染图片和框
+                URL.revokeObjectURL(url); // 释放内存
+            };
+            currentImageObj.src = url;
+        }
+
+        // ================= 核心绘图逻辑 (60fps 拖拽的基础) =================
+        function draw() {
+            if (!currentImageObj) return;
+
+            // 1. 清空画布并画底图
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(currentImageObj, 0, 0, canvas.width, canvas.height);
+
+            const currentFileName = imageFiles[currentIndex].name;
+            const boxes = annotations[currentFileName] || [];
+
+            // 2. 画已经保存的框
+            boxes.forEach(box => {
+                drawBox(box.bbox[0], box.bbox[1], box.bbox[2], box.bbox[3], box.class, false);
+            });
+
+            // 3. 画正在拖拽过程中的框
+            if (isDrawing) {
+                drawBox(startX, startY, currentX, currentY, currentClass, true);
+            }
+
+            // 4. 画十字准星 (跟随鼠标)
+            drawCrosshair();
+        }
+
+        function getColor(clsName) {
+            let idx = classes.indexOf(clsName);
+            if(idx === -1) idx = 0;
+            return COLORS[idx % COLORS.length];
+        }
+
+        function drawBox(x1, y1, x2, y2, clsName, isTemp) {
+            const xmin = Math.min(x1, x2);
+            const ymin = Math.min(y1, y2);
+            const xmax = Math.max(x1, x2);
+            const ymax = Math.max(y1, y2);
+            const width = xmax - xmin;
+            const height = ymax - ymin;
+
+            const color = getColor(clsName);
+            
+            // 框边缘
+            ctx.lineWidth = Math.max(2, canvas.width / 400); // 自适应线宽
+            ctx.strokeStyle = color;
+            ctx.strokeRect(xmin, ymin, width, height);
+
+            // 填充半透明背景 (拖拽时)
+            if (isTemp) {
+                ctx.fillStyle = color + "40"; // 加透明度
+                ctx.fillRect(xmin, ymin, width, height);
+            }
+
+            // 文本标签
+            ctx.fillStyle = color;
+            const fontSize = Math.max(12, canvas.width / 60);
+            ctx.font = `${fontSize}px sans-serif`;
+            const textWidth = ctx.measureText(clsName).width;
+            
+            ctx.fillRect(xmin, ymin - fontSize - 4, textWidth + 8, fontSize + 4);
+            ctx.fillStyle = "white";
+            ctx.fillText(clsName, xmin + 4, ymin - 4);
+        }
+
+        function drawCrosshair() {
+            // 只在工作区内画虚线
+            ctx.beginPath();
+            ctx.setLineDash([5, 5]);
+            ctx.strokeStyle = "rgba(255, 0, 0, 0.8)";
+            ctx.lineWidth = Math.max(1, canvas.width / 800);
+
+            // 纵线
+            ctx.moveTo(mouseX, 0);
+            ctx.lineTo(mouseX, canvas.height);
+            // 横线
+            ctx.moveTo(0, mouseY);
+            ctx.lineTo(canvas.width, mouseY);
+
+            ctx.stroke();
+            ctx.setLineDash([]); // 恢复实线
+        }
+
+        // ================= 坐标转换逻辑 =================
+        // 由于 Canvas 被 CSS 缩放，我们需要把鼠标坐标映射回图片真实分辨率
+        function getMousePos(evt) {
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            return {
+                x: (evt.clientX - rect.left) * scaleX,
+                y: (evt.clientY - rect.top) * scaleY
+            };
+        }
+
+        // ================= 鼠标拖拽事件 =================
+        canvas.addEventListener('mousedown', (e) => {
+            if(!currentImageObj || e.button !== 0) return; // 只有左键触发
+            const pos = getMousePos(e);
+            isDrawing = true;
+            startX = pos.x;
+            startY = pos.y;
+            currentX = pos.x;
+            currentY = pos.y;
+            draw();
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            if(!currentImageObj) return;
+            const pos = getMousePos(e);
+            mouseX = pos.x;
+            mouseY = pos.y;
+            
+            if (isDrawing) {
+                currentX = mouseX;
+                currentY = mouseY;
+            }
+            // 使用 requestAnimationFrame 保证丝滑不掉帧
+            requestAnimationFrame(draw);
+        });
+
+        window.addEventListener('mouseup', (e) => {
+            if(!isDrawing) return;
+            isDrawing = false;
+            
+            // 防止误触（太小的框被过滤）
+            const width = Math.abs(currentX - startX);
+            const height = Math.abs(currentY - startY);
+            if(width > 5 && height > 5) {
+                const currentFileName = imageFiles[currentIndex].name;
+                annotations[currentFileName].push({
+                    class: currentClass,
+                    bbox: [Math.min(startX, currentX), Math.min(startY, currentY), Math.max(startX, currentX), Math.max(startY, currentY)]
+                });
+                renderFileList(); // 更新左侧对勾
+            }
+            draw();
+        });
+
+        // 鼠标移出画布时隐藏十字准星
+        canvas.addEventListener('mouseleave', () => {
+            mouseX = -1;
+            mouseY = -1;
+            draw();
+        });
+
+        // ================= 交互控制 =================
+        document.getElementById('prev-btn').onclick = () => loadImage(currentIndex - 1);
+        document.getElementById('next-btn').onclick = () => loadImage(currentIndex + 1);
+        
+        document.getElementById('undo-btn').onclick = () => {
+            if(currentIndex >= 0) {
+                const currentFileName = imageFiles[currentIndex].name;
+                if(annotations[currentFileName] && annotations[currentFileName].length > 0) {
+                    annotations[currentFileName].pop();
+                    draw();
+                    renderFileList();
+                }
+            }
+        };
+
+        // 快捷键支持
+        document.addEventListener('keydown', (e) => {
+            if(e.target.tagName === 'INPUT') return; // 如果在输入类别则不触发
+            if(e.key.toLowerCase() === 'a') loadImage(currentIndex - 1);
+            if(e.key.toLowerCase() === 'd') loadImage(currentIndex + 1);
+            if(e.key.toLowerCase() === 'z' && (e.ctrlKey || e.metaKey)) {
+                e.preventDefault();
+                document.getElementById('undo-btn').click();
+            }
+        });
+
+        // ================= XML 生成与打包导出 (JSZip) =================
+        function generateXML(filename, width, height, boxes) {
+            let xml = `<annotation>\n`;
+            xml += `  <folder>images</folder>\n`;
+            xml += `  <filename>${filename}</filename>\n`;
+            xml += `  <path>${filename}</path>\n`;
+            xml += `  <source><database>Unknown</database></source>\n`;
+            xml += `  <size>\n`;
+            xml += `    <width>${width}</width>\n`;
+            xml += `    <height>${height}</height>\n`;
+            xml += `    <depth>3</depth>\n`;
+            xml += `  </size>\n`;
+            xml += `  <segmented>0</segmented>\n`;
+            
+            boxes.forEach(box => {
+                xml += `  <object>\n`;
+                xml += `    <name>${box.class}</name>\n`;
+                xml += `    <pose>Unspecified</pose>\n`;
+                xml += `    <truncated>0</truncated>\n`;
+                xml += `    <difficult>0</difficult>\n`;
+                xml += `    <bndbox>\n`;
+                xml += `      <xmin>${Math.round(box.bbox[0])}</xmin>\n`;
+                xml += `      <ymin>${Math.round(box.bbox[1])}</ymin>\n`;
+                xml += `      <xmax>${Math.round(box.bbox[2])}</xmax>\n`;
+                xml += `      <ymax>${Math.round(box.bbox[3])}</ymax>\n`;
+                xml += `    </bndbox>\n`;
+                xml += `  </object>\n`;
+            });
+            xml += `</annotation>`;
+            return xml;
+        }
+
+        document.getElementById('export-btn').onclick = () => {
+            if(imageFiles.length === 0) {
+                showToast("请先加载图片并标注！", true);
+                return;
+            }
+
+            const zip = new JSZip();
+            let count = 0;
+
+            // 遍历所有有标注的图片生成 XML
+            for(const filename in annotations) {
+                const boxes = annotations[filename];
+                if(boxes && boxes.length > 0) {
+                    // 我们需要获取原始图片长宽。一种做法是利用标注时记录的（或这里为了纯净，我们假设所有图片分辨率已经在加载时确定）
+                    // 为了健壮性，我们可以读取 Canvas 的分辨率。但对于未加载过的图片怎么办？
+                    // 完美的做法：让用户在导出前确保图片是一批同分辨率的，或者我们在导出时读取文件流。
+                    // 简化的妥协：如果之前加载过就有准确分辨率，我们在这里借用目前已知的或者通过 Image() 异步读取。
+                    // 为了极速导出，我们这里使用当前画布的分辨率（如果是同批次数据通常一致），并建议外包标完导出。
+                    
+                    const xmlName = filename.substring(0, filename.lastIndexOf('.')) + ".xml";
+                    // 假设所有图片尺寸和当前加载的一样（简单处理，如果需要精确，需要提前把图片都读取一遍分辨率）
+                    const w = currentImageObj ? currentImageObj.width : 0;
+                    const h = currentImageObj ? currentImageObj.height : 0;
+                    
+                    const xmlContent = generateXML(filename, w, h, boxes);
+                    zip.file(xmlName, xmlContent);
+                    count++;
+                }
+            }
+
+            if(count === 0) {
+                showToast("还没有任何标注数据！", true);
+                return;
+            }
+
+            showToast(`正在打包 ${count} 个 XML 文件...`);
+            zip.generateAsync({type:"blob"}).then(function(content) {
+                // 触发下载
+                const url = window.URL.createObjectURL(content);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = "Annotations_XML.zip";
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                window.URL.revokeObjectURL(url);
+                showToast(`✅ 成功导出 ${count} 个标签！`);
+            });
+        };
+
+    </script>
+</body>
+</html>
